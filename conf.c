@@ -49,11 +49,19 @@ static void kafka_conf_callback_dtor(kafka_conf_callback *cb TSRMLS_DC) /* {{{ *
 void kafka_conf_callbacks_dtor(kafka_conf_callbacks *cbs TSRMLS_DC) /* {{{ */
 {
     kafka_conf_callback_dtor(cbs->error TSRMLS_CC);
+    cbs->error = NULL;
     kafka_conf_callback_dtor(cbs->rebalance TSRMLS_CC);
+    cbs->rebalance = NULL;
     kafka_conf_callback_dtor(cbs->dr_msg TSRMLS_CC);
+    cbs->dr_msg = NULL;
     kafka_conf_callback_dtor(cbs->stats TSRMLS_CC);
+    cbs->stats = NULL;
     kafka_conf_callback_dtor(cbs->consume TSRMLS_CC);
+    cbs->consume = NULL;
     kafka_conf_callback_dtor(cbs->offset_commit TSRMLS_CC);
+    cbs->offset_commit = NULL;
+    kafka_conf_callback_dtor(cbs->log TSRMLS_CC);
+    cbs->log = NULL;
 } /* }}} */
 
 static void kafka_conf_callback_copy(kafka_conf_callback **to, kafka_conf_callback *from TSRMLS_DC) /* {{{ */
@@ -77,6 +85,7 @@ void kafka_conf_callbacks_copy(kafka_conf_callbacks *to, kafka_conf_callbacks *f
     kafka_conf_callback_copy(&to->stats, from->stats TSRMLS_CC);
     kafka_conf_callback_copy(&to->consume, from->consume TSRMLS_CC);
     kafka_conf_callback_copy(&to->offset_commit, from->offset_commit TSRMLS_CC);
+    kafka_conf_callback_copy(&to->log, from->log TSRMLS_CC);
 } /* }}} */
 
 static void kafka_conf_free(zend_object *object TSRMLS_DC) /* {{{ */
@@ -149,7 +158,7 @@ static void kafka_conf_error_cb(rd_kafka_t *rk, int err, const char *reason, voi
     MAKE_STD_ZEVAL(args[1]);
     MAKE_STD_ZEVAL(args[2]);
 
-    KAFKA_ZVAL_ZVAL(P_ZEVAL(args[0]), &cbs->rk, 1, 0);
+    KAFKA_ZVAL_ZVAL(P_ZEVAL(args[0]), &cbs->zrk, 1, 0);
     ZVAL_LONG(P_ZEVAL(args[1]), err);
     RDKAFKA_ZVAL_STRING(P_ZEVAL(args[2]), reason);
 
@@ -177,7 +186,7 @@ static void kafka_conf_dr_msg_cb(rd_kafka_t *rk, const rd_kafka_message_t *msg, 
     MAKE_STD_ZEVAL(args[0]);
     MAKE_STD_ZEVAL(args[1]);
 
-    KAFKA_ZVAL_ZVAL(P_ZEVAL(args[0]), &cbs->rk, 1, 0);
+    KAFKA_ZVAL_ZVAL(P_ZEVAL(args[0]), &cbs->zrk, 1, 0);
     kafka_message_new(P_ZEVAL(args[1]), msg TSRMLS_CC);
 
     rdkafka_call_function(&cbs->dr_msg->fci, &cbs->dr_msg->fcc, NULL, 2, args TSRMLS_CC);
@@ -204,7 +213,7 @@ static int kafka_conf_stats_cb(rd_kafka_t *rk, char *json, size_t json_len, void
     MAKE_STD_ZEVAL(args[1]);
     MAKE_STD_ZEVAL(args[2]);
 
-    KAFKA_ZVAL_ZVAL(P_ZEVAL(args[0]), &cbs->rk, 1, 0);
+    KAFKA_ZVAL_ZVAL(P_ZEVAL(args[0]), &cbs->zrk, 1, 0);
     RDKAFKA_ZVAL_STRING(P_ZEVAL(args[1]), json);
     ZVAL_LONG(P_ZEVAL(args[2]), json_len);
 
@@ -217,7 +226,6 @@ static int kafka_conf_stats_cb(rd_kafka_t *rk, char *json, size_t json_len, void
     return 0;
 }
 
-#ifdef HAVE_NEW_KAFKA_CONSUMER
 static void kafka_conf_rebalance_cb(rd_kafka_t *rk, rd_kafka_resp_err_t err, rd_kafka_topic_partition_list_t *partitions, void *opaque)
 {
     kafka_conf_callbacks *cbs = (kafka_conf_callbacks*) opaque;
@@ -229,6 +237,13 @@ static void kafka_conf_rebalance_cb(rd_kafka_t *rk, rd_kafka_resp_err_t err, rd_
     }
 
     if (!cbs->rebalance) {
+        err = rd_kafka_assign(rk, NULL);
+
+        if (err != RD_KAFKA_RESP_ERR_NO_ERROR) {
+            zend_throw_exception(ce_kafka_exception, rd_kafka_err2str(err), err TSRMLS_CC);
+            return;
+        }
+
         return;
     }
 
@@ -236,7 +251,7 @@ static void kafka_conf_rebalance_cb(rd_kafka_t *rk, rd_kafka_resp_err_t err, rd_
     MAKE_STD_ZEVAL(args[1]);
     MAKE_STD_ZEVAL(args[2]);
 
-    KAFKA_ZVAL_ZVAL(P_ZEVAL(args[0]), &cbs->rk, 1, 0);
+    KAFKA_ZVAL_ZVAL(P_ZEVAL(args[0]), &cbs->zrk, 1, 0);
     ZVAL_LONG(P_ZEVAL(args[1]), err);
     kafka_topic_partition_list_to_array(P_ZEVAL(args[2]), partitions TSRMLS_CC);
 
@@ -246,9 +261,7 @@ static void kafka_conf_rebalance_cb(rd_kafka_t *rk, rd_kafka_resp_err_t err, rd_
     zval_ptr_dtor(&args[1]);
     zval_ptr_dtor(&args[2]);
 }
-#endif /* HAVE_NEW_KAFKA_CONSUMER */
 
-#ifdef HAVE_NEW_KAFKA_CONSUMER
 static void kafka_conf_consume_cb(rd_kafka_message_t *msg, void *opaque)
 {
     kafka_conf_callbacks *cbs = (kafka_conf_callbacks*) opaque;
@@ -266,17 +279,16 @@ static void kafka_conf_consume_cb(rd_kafka_message_t *msg, void *opaque)
     MAKE_STD_ZEVAL(args[0]);
     MAKE_STD_ZEVAL(args[1]);
 
-            KAFKA_ZVAL_ZVAL(P_ZEVAL(args[0]), &cbs->rk, 1, 0);
-    kafka_message_new(P_ZEVAL(args[1]), msg TSRMLS_CC);
+    kafka_message_new(P_ZEVAL(args[0]), msg TSRMLS_CC);
+    KAFKA_ZVAL_ZVAL(P_ZEVAL(args[1]), &cbs->zrk, 1, 0);
+
 
     rdkafka_call_function(&cbs->consume->fci, &cbs->consume->fcc, NULL, 2, args TSRMLS_CC);
 
     zval_ptr_dtor(&args[0]);
     zval_ptr_dtor(&args[1]);
 }
-#endif /* HAVE_NEW_KAFKA_CONSUMER */
 
-#ifdef HAVE_NEW_KAFKA_CONSUMER
 static void kafka_conf_offset_commit_cb(rd_kafka_t *rk, rd_kafka_resp_err_t err, rd_kafka_topic_partition_list_t *partitions, void *opaque)
 {
     kafka_conf_callbacks *cbs = (kafka_conf_callbacks*) opaque;
@@ -295,7 +307,7 @@ static void kafka_conf_offset_commit_cb(rd_kafka_t *rk, rd_kafka_resp_err_t err,
     MAKE_STD_ZEVAL(args[1]);
     MAKE_STD_ZEVAL(args[2]);
 
-    KAFKA_ZVAL_ZVAL(P_ZEVAL(args[0]), &cbs->rk, 1, 0);
+    KAFKA_ZVAL_ZVAL(P_ZEVAL(args[0]), &cbs->zrk, 1, 0);
     ZVAL_LONG(P_ZEVAL(args[1]), err);
     kafka_topic_partition_list_to_array(P_ZEVAL(args[2]), partitions TSRMLS_CC);
 
@@ -305,7 +317,35 @@ static void kafka_conf_offset_commit_cb(rd_kafka_t *rk, rd_kafka_resp_err_t err,
     zval_ptr_dtor(&args[1]);
     zval_ptr_dtor(&args[2]);
 }
-#endif /* HAVE_NEW_KAFKA_CONSUMER */
+
+static void kafka_conf_log_cb(const rd_kafka_t *rk, int level, const char *facility, const char *message)
+{
+    zeval args[4];
+    TSRMLS_FETCH();
+
+    kafka_conf_callbacks *cbs = (kafka_conf_callbacks*) rd_kafka_opaque(rk);
+
+    if (!cbs->log) {
+        return;
+    }
+
+    MAKE_STD_ZEVAL(args[0]);
+    MAKE_STD_ZEVAL(args[1]);
+    MAKE_STD_ZEVAL(args[2]);
+    MAKE_STD_ZEVAL(args[3]);
+
+    KAFKA_ZVAL_ZVAL(P_ZEVAL(args[0]), &cbs->zrk, 1, 0);
+    ZVAL_LONG(P_ZEVAL(args[1]), level);
+    RDKAFKA_ZVAL_STRING(P_ZEVAL(args[2]), facility);
+    RDKAFKA_ZVAL_STRING(P_ZEVAL(args[3]), message);
+
+    rdkafka_call_function(&cbs->log->fci, &cbs->log->fcc, NULL, 4, args TSRMLS_CC);
+
+    zval_ptr_dtor(&args[0]);
+    zval_ptr_dtor(&args[1]);
+    zval_ptr_dtor(&args[2]);
+    zval_ptr_dtor(&args[3]);
+}
 
 /* {{{ proto RdKafka\Conf::__construct() */
 
@@ -428,7 +468,6 @@ PHP_METHOD(RdKafka__Conf, set)
 }
 /* }}} */
 
-#ifdef HAVE_NEW_KAFKA_CONSUMER
 /* {{{ proto RdKafka\Conf::setDefaultTopicConf(RdKafka\TopicConf $topicConf) */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_kafka_conf_set_default_topic_conf, 0, 0, 1)
@@ -461,7 +500,6 @@ PHP_METHOD(RdKafka__Conf, setDefaultTopicConf)
     rd_kafka_conf_set_default_topic_conf(intern->u.conf, topic_conf);
 }
 /* }}} */
-#endif /* HAVE_NEW_KAFKA_CONSUMER */
 
 /* {{{ proto void RdKafka\Conf::setErrorCb(callable $callback)
    Sets the error callback */
@@ -538,7 +576,7 @@ PHP_METHOD(RdKafka__Conf, setDrMsgCb)
 /* }}} */
 
 /* {{{ proto void RdKafka\Conf::setStatsCb(callable $callback)
-   Sets the delivery report callback */
+   Sets the statistics report callback */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_kafka_conf_set_stats_cb, 0, 0, 1)
     ZEND_ARG_INFO(0, callback)
@@ -574,7 +612,6 @@ PHP_METHOD(RdKafka__Conf, setStatsCb)
 }
 /* }}} */
 
-#ifdef HAVE_NEW_KAFKA_CONSUMER
 /* {{{ proto void RdKafka\Conf::setRebalanceCb(mixed $callback)
    Set rebalance callback for use with coordinated consumer group balancing */
 
@@ -611,9 +648,7 @@ PHP_METHOD(RdKafka__Conf, setRebalanceCb)
     rd_kafka_conf_set_rebalance_cb(intern->u.conf, kafka_conf_rebalance_cb);
 }
 /* }}} */
-#endif /* HAVE_NEW_KAFKA_CONSUMER */
 
-#ifdef HAVE_NEW_KAFKA_CONSUMER
 /* {{{ proto void RdKafka\Conf::setConsumeCb(callable $callback)
    Set consume callback to use with poll */
 
@@ -650,9 +685,7 @@ PHP_METHOD(RdKafka__Conf, setConsumeCb)
     rd_kafka_conf_set_consume_cb(intern->u.conf, kafka_conf_consume_cb);
 }
 /* }}} */
-#endif /* HAVE_NEW_KAFKA_CONSUMER */
 
-#ifdef HAVE_NEW_KAFKA_CONSUMER
 /* {{{ proto void RdKafka\Conf::setOffsetCommitCb(mixed $callback)
    Set offset commit callback for use with consumer groups */
 
@@ -689,7 +722,45 @@ PHP_METHOD(RdKafka__Conf, setOffsetCommitCb)
     rd_kafka_conf_set_offset_commit_cb(intern->u.conf, kafka_conf_offset_commit_cb);
 }
 /* }}} */
-#endif /* HAVE_NEW_KAFKA_CONSUMER */
+
+/* {{{ proto void RdKafka\Conf::setLogCb(mixed $callback)
+   Set offset commit callback for use with consumer groups */
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_kafka_conf_set_log_cb, 0, 0, 1)
+    ZEND_ARG_INFO(0, callback)
+ZEND_END_ARG_INFO()
+
+PHP_METHOD(RdKafka__Conf, setLogCb)
+{
+    zend_fcall_info fci;
+    zend_fcall_info_cache fcc;
+    kafka_conf_object *conf;
+    char errstr[512];
+
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "f", &fci, &fcc) == FAILURE) {
+        return;
+    }
+
+    conf = get_kafka_conf_object(getThis() TSRMLS_CC);
+    if (!conf) {
+        return;
+    }
+
+    Z_ADDREF_P(P_ZEVAL(fci.function_name));
+
+    if (conf->cbs.log) {
+        zval_ptr_dtor(&conf->cbs.log->fci.function_name);
+    } else {
+        conf->cbs.log = ecalloc(1, sizeof(*conf->cbs.log));
+    }
+
+    conf->cbs.log->fci = fci;
+    conf->cbs.log->fcc = fcc;
+
+    rd_kafka_conf_set_log_cb(conf->u.conf, kafka_conf_log_cb);
+    rd_kafka_conf_set(conf->u.conf, "log.queue", "true", errstr, sizeof(errstr));
+}
+/* }}} */
 
 /* {{{ proto RdKafka\TopicConf::__construct() */
 PHP_METHOD(RdKafka__TopicConf, __construct)
@@ -721,7 +792,7 @@ ZEND_END_ARG_INFO()
 PHP_METHOD(RdKafka__TopicConf, setPartitioner)
 {
     kafka_conf_object *intern;
-    long id;
+    zend_long id;
     int32_t (*partitioner) (const rd_kafka_topic_t * rkt, const void * keydata, size_t keylen, int32_t partition_cnt, void * rkt_opaque, void * msg_opaque);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "l", &id) == FAILURE) {
@@ -737,13 +808,22 @@ PHP_METHOD(RdKafka__TopicConf, setPartitioner)
         case MSG_PARTITIONER_RANDOM:
             partitioner = rd_kafka_msg_partitioner_random;
             break;
-#ifdef HAVE_RD_KAFKA_MSG_PARTIIONER_CONSISTENT
         case MSG_PARTITIONER_CONSISTENT:
             partitioner = rd_kafka_msg_partitioner_consistent;
             break;
+        case MSG_PARTITIONER_CONSISTENT_RANDOM:
+            partitioner = rd_kafka_msg_partitioner_consistent_random;
+            break;
+#ifdef HAS_RD_KAFKA_PARTITIONER_MURMUR2
+        case MSG_PARTITIONER_MURMUR2:
+            partitioner = rd_kafka_msg_partitioner_murmur2;
+            break;
+        case MSG_PARTITIONER_MURMUR2_RANDOM:
+            partitioner = rd_kafka_msg_partitioner_murmur2_random;
+            break;
 #endif
         default:
-            zend_throw_exception_ex(NULL, 0 TSRMLS_CC, "Invalid partitioner" TSRMLS_CC);
+            zend_throw_exception_ex(spl_ce_InvalidArgumentException, 0 TSRMLS_CC, "Invalid partitioner given" TSRMLS_CC);
             return;
     }
 
@@ -754,7 +834,7 @@ PHP_METHOD(RdKafka__TopicConf, setPartitioner)
 static const zend_function_entry kafka_topic_conf_fe[] = {
     PHP_ME(RdKafka__TopicConf, __construct, arginfo_kafka_conf___construct, ZEND_ACC_PUBLIC)
     PHP_ME(RdKafka__Conf, dump, arginfo_kafka_conf_dump, ZEND_ACC_PUBLIC)
-    PHP_ME(RdKafka__Conf, set, arginfo_kafka_conf_dump, ZEND_ACC_PUBLIC)
+    PHP_ME(RdKafka__Conf, set, arginfo_kafka_conf_set, ZEND_ACC_PUBLIC)
     PHP_ME(RdKafka__TopicConf, setPartitioner, arginfo_kafka_topic_conf_set_partitioner, ZEND_ACC_PUBLIC)
     PHP_FE_END
 };
@@ -763,17 +843,14 @@ static const zend_function_entry kafka_conf_fe[] = {
     PHP_ME(RdKafka__Conf, __construct, arginfo_kafka_conf___construct, ZEND_ACC_PUBLIC)
     PHP_ME(RdKafka__Conf, dump, arginfo_kafka_conf_dump, ZEND_ACC_PUBLIC)
     PHP_ME(RdKafka__Conf, set, arginfo_kafka_conf_set, ZEND_ACC_PUBLIC)
-#ifdef HAVE_NEW_KAFKA_CONSUMER
-    PHP_ME(RdKafka__Conf, setDefaultTopicConf, arginfo_kafka_conf_set_default_topic_conf, ZEND_ACC_PUBLIC)
-#endif /* HAVE_NEW_KAFKA_CONSUMER */
+    PHP_ME(RdKafka__Conf, setDefaultTopicConf, arginfo_kafka_conf_set_default_topic_conf, ZEND_ACC_PUBLIC | ZEND_ACC_DEPRECATED)
     PHP_ME(RdKafka__Conf, setErrorCb, arginfo_kafka_conf_set_error_cb, ZEND_ACC_PUBLIC)
     PHP_ME(RdKafka__Conf, setDrMsgCb, arginfo_kafka_conf_set_dr_msg_cb, ZEND_ACC_PUBLIC)
     PHP_ME(RdKafka__Conf, setStatsCb, arginfo_kafka_conf_set_stats_cb, ZEND_ACC_PUBLIC)
-#ifdef HAVE_NEW_KAFKA_CONSUMER
     PHP_ME(RdKafka__Conf, setRebalanceCb, arginfo_kafka_conf_set_rebalance_cb, ZEND_ACC_PUBLIC)
     PHP_ME(RdKafka__Conf, setConsumeCb, arginfo_kafka_conf_set_consume_cb, ZEND_ACC_PUBLIC)
     PHP_ME(RdKafka__Conf, setOffsetCommitCb, arginfo_kafka_conf_set_offset_commit_cb, ZEND_ACC_PUBLIC)
-#endif /* HAVE_NEW_KAFKA_CONSUMER */
+    PHP_ME(RdKafka__Conf, setLogCb, arginfo_kafka_conf_set_log_cb, ZEND_ACC_PUBLIC)
     PHP_FE_END
 };
 

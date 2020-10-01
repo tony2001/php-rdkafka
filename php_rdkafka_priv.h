@@ -99,11 +99,28 @@ static inline zval *rdkafka_hash_get_current_data_ex(HashTable *ht, HashPosition
     return zend_hash_get_current_data_ex(ht, pos);
 }
 
+static inline char *rdkafka_hash_get_current_key_ex(HashTable *ht, HashPosition *pos)
+{
+    zend_string* key;
+    zend_ulong index;
+
+    if (zend_hash_get_current_key_ex(ht, &key, &index, pos) == HASH_KEY_IS_STRING) {
+        return key->val;
+    }
+
+    return NULL;
+}
+
 #define rdkafka_add_assoc_string(arg, key, str) add_assoc_string(arg, key, str)
+
+#define rdkafka_add_assoc_stringl(arg, key, str, str_length) add_assoc_stringl(arg, key, str, str_length)
 
 #define RDKAFKA_RETURN_STRING(str) RETURN_STRING(str)
 #define RDKAFKA_ZVAL_STRING(zv, str) ZVAL_STRING(zv, str)
 #else /* PHP < 7 */
+
+typedef long zend_long;
+#define ZEND_LONG_FMT "%ld"
 
 typedef int arglen_t;
 
@@ -214,7 +231,22 @@ static inline zval **rdkafka_hash_get_current_data_ex(HashTable *ht, HashPositio
     return NULL;
 }
 
+static inline char **rdkafka_hash_get_current_key_ex(HashTable *ht, HashPosition *pos)
+{
+    char *key = NULL;
+    uint  klen;
+    ulong index;
+
+    if (zend_hash_get_current_key_ex(ht, &key, &klen, &index, 0, pos) == HASH_KEY_IS_STRING) {
+        return key;
+    }
+
+    return NULL;
+}
+
 #define rdkafka_add_assoc_string(arg, key, str) add_assoc_string(arg, key, str, 1)
+
+#define rdkafka_add_assoc_stringl(arg, key, str, str_length) add_assoc_stringl(arg, key, str, str_length, 1)
 
 #define RDKAFKA_RETURN_STRING(str) RETURN_STRING(str, 1)
 #define RDKAFKA_ZVAL_STRING(zv, str) ZVAL_STRING(zv, str, 1)

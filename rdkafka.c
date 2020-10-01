@@ -39,6 +39,10 @@
 #include "topic_partition.h"
 #include "fun.h"
 
+#if RD_KAFKA_VERSION < 0x000b0000
+#	error librdkafka version 0.11.0 or greater required
+#endif
+
 enum {
    RD_KAFKA_LOG_PRINT = 100
    , RD_KAFKA_LOG_SYSLOG = 101
@@ -49,10 +53,6 @@ typedef struct _toppar {
     rd_kafka_topic_t    *rkt;
     int32_t             partition;
 } toppar;
-
-static const zend_function_entry empty_function_entries[] = {
-    PHP_FE_END
-};
 
 static zend_object_handlers kafka_object_handlers;
 zend_object_handlers kafka_default_object_handlers;
@@ -82,9 +82,6 @@ static void kafka_free(zend_object *object TSRMLS_DC) /* {{{ */
         }
         zend_hash_destroy(&intern->topics);
 
-        while (rd_kafka_outq_len(intern->rk) > 0) {
-            rd_kafka_poll(intern->rk, 1);
-        }
         rd_kafka_destroy(intern->rk);
         intern->rk = NULL;
     }
@@ -131,7 +128,7 @@ static void kafka_init(zval *this_ptr, rd_kafka_type_t type, zval *zconf TSRMLS_
         if (conf_intern) {
             conf = rd_kafka_conf_dup(conf_intern->u.conf);
             kafka_conf_callbacks_copy(&intern->cbs, &conf_intern->cbs TSRMLS_CC);
-            intern->cbs.rk = *this_ptr;
+            intern->cbs.zrk = *this_ptr;
             rd_kafka_conf_set_opaque(conf, &intern->cbs);
         }
     }
@@ -141,6 +138,10 @@ static void kafka_init(zval *this_ptr, rd_kafka_type_t type, zval *zconf TSRMLS_
     if (rk == NULL) {
         zend_throw_exception(ce_kafka_exception, errstr, 0 TSRMLS_CC);
         return;
+    }
+
+    if (intern->cbs.log) {
+        rd_kafka_set_log_queue(rk, NULL);
     }
 
     intern->rk = rk;
@@ -234,9 +235,6 @@ int is_consuming_toppar(kafka_object * intern, rd_kafka_topic_t * rkt, int32_t p
 }
 
 /* {{{ private constructor */
-ZEND_BEGIN_ARG_INFO_EX(arginfo_kafka___private_construct, 0, 0, 0)
-ZEND_END_ARG_INFO()
-
 PHP_METHOD(RdKafka, __construct)
 {
     zend_throw_exception(NULL, "Private constructor", 0 TSRMLS_CC);
@@ -268,114 +266,13 @@ PHP_METHOD(RdKafka__Consumer, __construct)
 }
 /* }}} */
 
-static const zend_function_entry kafka_consumer_fe[] = {
-    PHP_ME(RdKafka__Consumer, __construct, arginfo_kafka_consumer___construct, ZEND_ACC_PUBLIC)
-    PHP_FE_END
-};
-
-/* {{{ proto int RdKafka\Kafka::addBrokers(string $brokerList)
-   Returns the number of brokers successfully added */
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_kafka_add_brokers, 0, 0, 1)
-    ZEND_ARG_INFO(0, broker_list)
-ZEND_END_ARG_INFO()
-
-PHP_METHOD(RdKafka__Kafka, addBrokers)
-{
-    char *broker_list;
-    arglen_t broker_list_len;
-    kafka_object *intern;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s", &broker_list, &broker_list_len) == FAILURE) {
-        return;
-    }
-
-    intern = get_kafka_object(getThis() TSRMLS_CC);
-    if (!intern) {
-        return;
-    }
-
-    RETURN_LONG(rd_kafka_brokers_add(intern->rk, broker_list));
-}
-/* }}} */
-
-/* {{{ proto RdKafka\Metadata::getMetadata(bool $all_topics, RdKafka\Topic $only_topic, int $timeout_ms)
-   Request Metadata from broker */
-ZEND_BEGIN_ARG_INFO_EX(arginfo_kafka_get_metadata, 0, 0, 1)
-    ZEND_ARG_INFO(0, all_topics)
-    ZEND_ARG_INFO(0, only_topic)
-    ZEND_ARG_INFO(0, timeout_ms)
-ZEND_END_ARG_INFO()
-
-PHP_METHOD(RdKafka__Kafka, getMetadata)
-{
-    zend_bool all_topics;
-    zval *only_zrkt;
-    long timeout_ms;
-    rd_kafka_resp_err_t err;
-    kafka_object *intern;
-    const rd_kafka_metadata_t *metadata;
-    kafka_topic_object *only_orkt = NULL;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "bO!l", &all_topics, &only_zrkt, ce_kafka_topic, &timeout_ms) == FAILURE) {
-        return;
-    }
-
-    intern = get_kafka_object(getThis() TSRMLS_CC);
-    if (!intern) {
-        return;
-    }
-
-    if (only_zrkt) {
-        only_orkt = get_kafka_topic_object(only_zrkt TSRMLS_CC);
-        if (!only_orkt) {
-            return;
-        }
-    }
-
-    err = rd_kafka_metadata(intern->rk, all_topics, only_orkt ? only_orkt->rkt : NULL, &metadata, timeout_ms);
-
-    if (err != RD_KAFKA_RESP_ERR_NO_ERROR) {
-        zend_throw_exception(ce_kafka_exception, rd_kafka_err2str(err), err TSRMLS_CC);
-        return;
-    }
-
-    kafka_metadata_init(return_value, metadata TSRMLS_CC);
-}
-/* }}} */
-
-/* {{{ proto void RdKafka\Kafka::setLogLevel(int $level)
-   Specifies the maximum logging level produced by internal kafka logging and debugging */
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_kafka_set_log_level, 0, 0, 1)
-    ZEND_ARG_INFO(0, level)
-ZEND_END_ARG_INFO()
-
-PHP_METHOD(RdKafka__Kafka, setLogLevel)
-{
-    kafka_object *intern;
-    long level;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "l", &level) == FAILURE) {
-        return;
-    }
-
-    intern = get_kafka_object(getThis() TSRMLS_CC);
-    if (!intern) {
-        return;
-    }
-
-    rd_kafka_set_log_level(intern->rk, level);
-}
-/* }}} */
-
-/* {{{ proto RdKafka\Queue RdKafka\Kafka::newQueue()
+/* {{{ proto RdKafka\Queue RdKafka\Consumer::newQueue()
    Returns a RdKafka\Queue object */
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_kafka_new_queue, 0, 0, 0)
 ZEND_END_ARG_INFO()
 
-PHP_METHOD(RdKafka__Kafka, newQueue)
+PHP_METHOD(RdKafka__Consumer, newQueue)
 {
     rd_kafka_queue_t *rkqu;
     kafka_object *intern;
@@ -418,6 +315,108 @@ PHP_METHOD(RdKafka__Kafka, newQueue)
     Z_ADDREF_P(P_ZEVAL(queue_intern->zrk));
 
     zend_hash_index_add_ptr(&intern->queues, (zend_ulong)queue_intern, queue_intern);
+}
+/* }}} */
+
+static const zend_function_entry kafka_consumer_fe[] = {
+    PHP_ME(RdKafka__Consumer, __construct, arginfo_kafka_consumer___construct, ZEND_ACC_PUBLIC)
+    PHP_ME(RdKafka__Consumer, newQueue, arginfo_kafka_new_queue, ZEND_ACC_PUBLIC)
+    PHP_FE_END
+};
+
+/* {{{ proto int RdKafka\Kafka::addBrokers(string $brokerList)
+   Returns the number of brokers successfully added */
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_kafka_add_brokers, 0, 0, 1)
+    ZEND_ARG_INFO(0, broker_list)
+ZEND_END_ARG_INFO()
+
+PHP_METHOD(RdKafka__Kafka, addBrokers)
+{
+    char *broker_list;
+    arglen_t broker_list_len;
+    kafka_object *intern;
+
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "s", &broker_list, &broker_list_len) == FAILURE) {
+        return;
+    }
+
+    intern = get_kafka_object(getThis() TSRMLS_CC);
+    if (!intern) {
+        return;
+    }
+
+    RETURN_LONG(rd_kafka_brokers_add(intern->rk, broker_list));
+}
+/* }}} */
+
+/* {{{ proto RdKafka\Metadata::getMetadata(bool $all_topics, RdKafka\Topic $only_topic, int $timeout_ms)
+   Request Metadata from broker */
+ZEND_BEGIN_ARG_INFO_EX(arginfo_kafka_get_metadata, 0, 0, 1)
+    ZEND_ARG_INFO(0, all_topics)
+    ZEND_ARG_INFO(0, only_topic)
+    ZEND_ARG_INFO(0, timeout_ms)
+ZEND_END_ARG_INFO()
+
+PHP_METHOD(RdKafka__Kafka, getMetadata)
+{
+    zend_bool all_topics;
+    zval *only_zrkt;
+    zend_long timeout_ms;
+    rd_kafka_resp_err_t err;
+    kafka_object *intern;
+    const rd_kafka_metadata_t *metadata;
+    kafka_topic_object *only_orkt = NULL;
+
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "bO!l", &all_topics, &only_zrkt, ce_kafka_topic, &timeout_ms) == FAILURE) {
+        return;
+    }
+
+    intern = get_kafka_object(getThis() TSRMLS_CC);
+    if (!intern) {
+        return;
+    }
+
+    if (only_zrkt) {
+        only_orkt = get_kafka_topic_object(only_zrkt TSRMLS_CC);
+        if (!only_orkt) {
+            return;
+        }
+    }
+
+    err = rd_kafka_metadata(intern->rk, all_topics, only_orkt ? only_orkt->rkt : NULL, &metadata, timeout_ms);
+
+    if (err != RD_KAFKA_RESP_ERR_NO_ERROR) {
+        zend_throw_exception(ce_kafka_exception, rd_kafka_err2str(err), err TSRMLS_CC);
+        return;
+    }
+
+    kafka_metadata_init(return_value, metadata TSRMLS_CC);
+}
+/* }}} */
+
+/* {{{ proto void RdKafka\Kafka::setLogLevel(int $level)
+   Specifies the maximum logging level produced by internal kafka logging and debugging */
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_kafka_set_log_level, 0, 0, 1)
+    ZEND_ARG_INFO(0, level)
+ZEND_END_ARG_INFO()
+
+PHP_METHOD(RdKafka__Kafka, setLogLevel)
+{
+    kafka_object *intern;
+    zend_long level;
+
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "l", &level) == FAILURE) {
+        return;
+    }
+
+    intern = get_kafka_object(getThis() TSRMLS_CC);
+    if (!intern) {
+        return;
+    }
+
+    rd_kafka_set_log_level(intern->rk, level);
 }
 /* }}} */
 
@@ -528,7 +527,7 @@ ZEND_END_ARG_INFO()
 PHP_METHOD(RdKafka__Kafka, poll)
 {
     kafka_object *intern;
-    long timeout;
+    zend_long timeout;
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "l", &timeout) == FAILURE) {
         return;
@@ -543,6 +542,144 @@ PHP_METHOD(RdKafka__Kafka, poll)
 }
 /* }}} */
 
+/* {{{ proto int RdKafka\Kafka::flush(int $timeout_ms)
+   Wait until all outstanding produce requests, et.al, are completed. */
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_kafka_flush, 0, 0, 1)
+    ZEND_ARG_INFO(0, timeout_ms)
+ZEND_END_ARG_INFO()
+
+PHP_METHOD(RdKafka__Kafka, flush)
+{
+    kafka_object *intern;
+    zend_long timeout;
+
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "l", &timeout) == FAILURE) {
+        return;
+    }
+
+    intern = get_kafka_object(getThis() TSRMLS_CC);
+    if (!intern) {
+        return;
+    }
+
+    RETURN_LONG(rd_kafka_flush(intern->rk, timeout));
+}
+/* }}} */
+
+#ifdef HAS_RD_KAFKA_PURGE
+/* {{{ proto int RdKafka\Kafka::purge(int $purge_flags)
+   Purge messages that are in queue or in flight */
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_kafka_purge, 0, 0, 1)
+    ZEND_ARG_INFO(0, purge_flags)
+ZEND_END_ARG_INFO()
+
+PHP_METHOD(RdKafka__Kafka, purge)
+{
+    kafka_object *intern;
+    zend_long purge_flags;
+
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "l", &purge_flags) == FAILURE) {
+        return;
+    }
+
+    intern = get_kafka_object(getThis() TSRMLS_CC);
+    if (!intern) {
+        return;
+    }
+
+    RETURN_LONG(rd_kafka_purge(intern->rk, purge_flags));
+}
+/* }}} */
+#endif
+
+/* {{{ proto void RdKafka\Kafka::queryWatermarkOffsets(string $topic, int $partition, int &$low, int &$high, int $timeout_ms)
+   Query broker for low (oldest/beginning) or high (newest/end) offsets for partition */
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_kafka_query_watermark_offsets, 0, 0, 1)
+    ZEND_ARG_INFO(0, topic)
+    ZEND_ARG_INFO(0, partition)
+    ZEND_ARG_INFO(1, low)
+    ZEND_ARG_INFO(1, high)
+    ZEND_ARG_INFO(0, timeout_ms)
+ZEND_END_ARG_INFO()
+
+PHP_METHOD(RdKafka__Kafka, queryWatermarkOffsets)
+{
+    kafka_object *intern;
+    char *topic;
+    arglen_t topic_length;
+    long low, high;
+    zend_long partition, timeout;
+    zval *lowResult, *highResult;
+    rd_kafka_resp_err_t err;
+
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "slzzl", &topic, &topic_length, &partition, &lowResult, &highResult, &timeout) == FAILURE) {
+        return;
+    }
+
+    ZEVAL_DEREF(lowResult);
+    ZEVAL_DEREF(highResult);
+
+    intern = get_kafka_object(getThis() TSRMLS_CC);
+    if (!intern) {
+        return;
+    }
+
+    err = rd_kafka_query_watermark_offsets(intern->rk, topic, partition, &low, &high, timeout);
+
+    if (err != RD_KAFKA_RESP_ERR_NO_ERROR) {
+        zend_throw_exception(ce_kafka_exception, rd_kafka_err2str(err), err TSRMLS_CC);
+        return;
+    }
+
+    ZVAL_LONG(lowResult, low);
+    ZVAL_LONG(highResult, high);
+}
+/* }}} */
+
+/* {{{ proto void RdKafka\Kafka::offsetsForTimes(array $topicPartitions, int $timeout_ms)
+   Look up the offsets for the given partitions by timestamp. */
+ZEND_BEGIN_ARG_INFO_EX(arginfo_kafka_offsets_for_times, 0, 0, 2)
+    ZEND_ARG_INFO(0, topic_partitions)
+    ZEND_ARG_INFO(0, timeout_ms)
+ZEND_END_ARG_INFO()
+PHP_METHOD(RdKafka__Kafka, offsetsForTimes)
+{
+    HashTable *htopars = NULL;
+    kafka_object *intern;
+    rd_kafka_topic_partition_list_t *topicPartitions;
+    zend_long timeout_ms;
+    rd_kafka_resp_err_t err;
+
+    if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "hl", &htopars, &timeout_ms) == FAILURE) {
+        return;
+    }
+
+    intern = get_kafka_object(getThis() TSRMLS_CC);
+    if (!intern) {
+        return;
+    }
+
+    topicPartitions = array_arg_to_kafka_topic_partition_list(1, htopars TSRMLS_CC);
+    if (!topicPartitions) {
+        return;
+    }
+
+    err = rd_kafka_offsets_for_times(intern->rk, topicPartitions, timeout_ms);
+
+    if (err != RD_KAFKA_RESP_ERR_NO_ERROR) {
+        rd_kafka_topic_partition_list_destroy(topicPartitions);
+        zend_throw_exception(ce_kafka_exception, rd_kafka_err2str(err), err TSRMLS_CC);
+        return;
+    }
+    kafka_topic_partition_list_to_array(return_value, topicPartitions TSRMLS_CC);
+    rd_kafka_topic_partition_list_destroy(topicPartitions);
+}
+/* }}} */
+
+
 /* {{{ proto void RdKafka::setLogger(mixed $logger)
    Sets the log callback */
 
@@ -553,7 +690,7 @@ ZEND_END_ARG_INFO()
 PHP_METHOD(RdKafka__Kafka, setLogger)
 {
     kafka_object *intern;
-    long id;
+    zend_long id;
     void (*logger) (const rd_kafka_t * rk, int level, const char *fac, const char *buf);
 
     if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "l", &id) == FAILURE) {
@@ -591,12 +728,17 @@ static const zend_function_entry kafka_fe[] = {
     PHP_ME(RdKafka__Kafka, getMetadata, arginfo_kafka_get_metadata, ZEND_ACC_PUBLIC)
     PHP_ME(RdKafka__Kafka, getOutQLen, arginfo_kafka_get_outq_len, ZEND_ACC_PUBLIC)
     PHP_MALIAS(RdKafka__Kafka, metadata, getMetadata, arginfo_kafka_get_metadata, ZEND_ACC_PUBLIC | ZEND_ACC_DEPRECATED)
-    PHP_ME(RdKafka__Kafka, setLogLevel, arginfo_kafka_set_log_level, ZEND_ACC_PUBLIC)
-    PHP_ME(RdKafka__Kafka, newQueue, arginfo_kafka_new_queue, ZEND_ACC_PUBLIC)
+    PHP_ME(RdKafka__Kafka, setLogLevel, arginfo_kafka_set_log_level, ZEND_ACC_PUBLIC | ZEND_ACC_DEPRECATED)
     PHP_ME(RdKafka__Kafka, newTopic, arginfo_kafka_new_topic, ZEND_ACC_PUBLIC)
     PHP_MALIAS(RdKafka__Kafka, outqLen, getOutQLen, arginfo_kafka_get_outq_len, ZEND_ACC_PUBLIC | ZEND_ACC_DEPRECATED)
     PHP_ME(RdKafka__Kafka, poll, arginfo_kafka_poll, ZEND_ACC_PUBLIC)
-    PHP_ME(RdKafka__Kafka, setLogger, arginfo_kafka_set_logger, ZEND_ACC_PUBLIC)
+    PHP_ME(RdKafka__Kafka, flush, arginfo_kafka_flush, ZEND_ACC_PUBLIC)
+#ifdef HAS_RD_KAFKA_PURGE
+    PHP_ME(RdKafka__Kafka, purge, arginfo_kafka_purge, ZEND_ACC_PUBLIC)
+#endif
+    PHP_ME(RdKafka__Kafka, setLogger, arginfo_kafka_set_logger, ZEND_ACC_PUBLIC | ZEND_ACC_DEPRECATED)
+    PHP_ME(RdKafka__Kafka, queryWatermarkOffsets, arginfo_kafka_query_watermark_offsets, ZEND_ACC_PUBLIC)
+    PHP_ME(RdKafka__Kafka, offsetsForTimes, arginfo_kafka_offsets_for_times, ZEND_ACC_PUBLIC)
     PHP_FE_END
 };
 
@@ -634,7 +776,6 @@ static const zend_function_entry kafka_producer_fe[] = {
 
 void register_err_constants(INIT_FUNC_ARGS) /* {{{ */
 {
-#ifdef HAVE_RD_KAFKA_GET_ERR_DESCS
     const struct rd_kafka_err_desc *errdescs;
     size_t cnt;
     size_t i;
@@ -661,43 +802,6 @@ void register_err_constants(INIT_FUNC_ARGS) /* {{{ */
 
         zend_register_long_constant(buf, len, desc->code, CONST_CS | CONST_PERSISTENT, module_number TSRMLS_CC);
     }
-
-#else /* HAVE_RD_KAFKA_GET_ERR_DESCS */
-
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR__BEGIN);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR__BAD_MSG);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR__BAD_COMPRESSION);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR__DESTROY);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR__FAIL);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR__TRANSPORT);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR__CRIT_SYS_RESOURCE);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR__RESOLVE);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR__MSG_TIMED_OUT);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR__PARTITION_EOF);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR__UNKNOWN_PARTITION);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR__FS);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR__UNKNOWN_TOPIC);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR__ALL_BROKERS_DOWN);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR__INVALID_ARG);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR__TIMED_OUT);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR__QUEUE_FULL);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR__ISR_INSUFF);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR__END);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR_UNKNOWN);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR_NO_ERROR);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR_OFFSET_OUT_OF_RANGE);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR_INVALID_MSG);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR_UNKNOWN_TOPIC_OR_PART);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR_INVALID_MSG_SIZE);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR_LEADER_NOT_AVAILABLE);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR_NOT_LEADER_FOR_PARTITION);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR_REQUEST_TIMED_OUT);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR_BROKER_NOT_AVAILABLE);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR_REPLICA_NOT_AVAILABLE);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR_MSG_SIZE_TOO_LARGE);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR_STALE_CTRL_EPOCH);
-    COPY_CONSTANT(RD_KAFKA_RESP_ERR_OFFSET_METADATA_TOO_LARGE);
-#endif /* HAVE_RD_KAFKA_GET_ERR_DESCS */
 } /* }}} */
 
 /* {{{ PHP_MINIT_FUNCTION
@@ -710,6 +814,12 @@ PHP_MINIT_FUNCTION(rdkafka)
     COPY_CONSTANT(RD_KAFKA_OFFSET_STORED);
     COPY_CONSTANT(RD_KAFKA_PARTITION_UA);
     COPY_CONSTANT(RD_KAFKA_PRODUCER);
+    COPY_CONSTANT(RD_KAFKA_MSG_F_BLOCK);
+#ifdef HAS_RD_KAFKA_PURGE
+    COPY_CONSTANT(RD_KAFKA_PURGE_F_QUEUE);
+    COPY_CONSTANT(RD_KAFKA_PURGE_F_INFLIGHT);
+    COPY_CONSTANT(RD_KAFKA_PURGE_F_NON_BLOCKING);
+#endif
     REGISTER_LONG_CONSTANT("RD_KAFKA_VERSION", rd_kafka_version(), CONST_CS | CONST_PERSISTENT);
     REGISTER_LONG_CONSTANT("RD_KAFKA_BUILD_VERSION", RD_KAFKA_VERSION, CONST_CS | CONST_PERSISTENT);
 
@@ -720,8 +830,11 @@ PHP_MINIT_FUNCTION(rdkafka)
     COPY_CONSTANT(RD_KAFKA_CONF_OK);
 
     REGISTER_LONG_CONSTANT("RD_KAFKA_MSG_PARTITIONER_RANDOM", MSG_PARTITIONER_RANDOM, CONST_CS | CONST_PERSISTENT);
-#ifdef HAVE_RD_KAFKA_MSG_PARTIIONER_CONSISTENT
     REGISTER_LONG_CONSTANT("RD_KAFKA_MSG_PARTITIONER_CONSISTENT", MSG_PARTITIONER_CONSISTENT, CONST_CS | CONST_PERSISTENT);
+    REGISTER_LONG_CONSTANT("RD_KAFKA_MSG_PARTITIONER_CONSISTENT_RANDOM", MSG_PARTITIONER_CONSISTENT_RANDOM, CONST_CS | CONST_PERSISTENT);
+#ifdef HAS_RD_KAFKA_PARTITIONER_MURMUR2
+    REGISTER_LONG_CONSTANT("RD_KAFKA_MSG_PARTITIONER_MURMUR2", MSG_PARTITIONER_MURMUR2, CONST_CS | CONST_PERSISTENT);
+    REGISTER_LONG_CONSTANT("RD_KAFKA_MSG_PARTITIONER_MURMUR2_RANDOM", MSG_PARTITIONER_MURMUR2_RANDOM, CONST_CS | CONST_PERSISTENT);
 #endif
 
     REGISTER_LONG_CONSTANT("RD_KAFKA_LOG_PRINT", RD_KAFKA_LOG_PRINT, CONST_CS | CONST_PERSISTENT);
@@ -765,15 +878,6 @@ PHP_MINIT_FUNCTION(rdkafka)
 }
 /* }}} */
 
-/* {{{ PHP_MSHUTDOWN_FUNCTION
- */
-PHP_MSHUTDOWN_FUNCTION(rdkafka)
-{
-    rd_kafka_wait_destroyed(1000);
-    return SUCCESS;
-}
-/* }}} */
-
 /* {{{ PHP_MINFO_FUNCTION
  */
 PHP_MINFO_FUNCTION(rdkafka)
@@ -781,10 +885,10 @@ PHP_MINFO_FUNCTION(rdkafka)
     char *rd_kafka_version;
 
     php_info_print_table_start();
-    php_info_print_table_header(2, "rdkafka support", "enabled");
+    php_info_print_table_row(2, "rdkafka support", "enabled");
 
-    php_info_print_table_header(2, "version", PHP_RDKAFKA_VERSION);
-    php_info_print_table_header(2, "build date", __DATE__ " " __TIME__);
+    php_info_print_table_row(2, "version", PHP_RDKAFKA_VERSION);
+    php_info_print_table_row(2, "build date", __DATE__ " " __TIME__);
 
     spprintf(
         &rd_kafka_version,
@@ -793,11 +897,11 @@ PHP_MINFO_FUNCTION(rdkafka)
         (RD_KAFKA_VERSION & 0xFF000000) >> 24,
         (RD_KAFKA_VERSION & 0x00FF0000) >> 16,
         (RD_KAFKA_VERSION & 0x0000FF00) >> 8,
-        (RD_KAFKA_VERSION & 0x000000FF) >> 8
+        (RD_KAFKA_VERSION & 0x000000FF)
     );
 
-    php_info_print_table_header(2, "librdkafka version (runtime)", rd_kafka_version_str());
-    php_info_print_table_header(2, "librdkafka version (build)", rd_kafka_version);
+    php_info_print_table_row(2, "librdkafka version (runtime)", rd_kafka_version_str());
+    php_info_print_table_row(2, "librdkafka version (build)", rd_kafka_version);
 
 
     efree(rd_kafka_version);
@@ -813,7 +917,7 @@ zend_module_entry rdkafka_module_entry = {
     "rdkafka",
     rdkafka_functions,
     PHP_MINIT(rdkafka),
-    PHP_MSHUTDOWN(rdkafka),
+    NULL,
     NULL,
     NULL,
     PHP_MINFO(rdkafka),
@@ -825,12 +929,3 @@ zend_module_entry rdkafka_module_entry = {
 #ifdef COMPILE_DL_RDKAFKA
 ZEND_GET_MODULE(rdkafka)
 #endif
-
-/*
- * Local variables:
- * tab-width: 4
- * c-basic-offset: 4
- * End:
- * vim600: noet sw=4 ts=4 fdm=marker
- * vim<600: noet sw=4 ts=4
- */

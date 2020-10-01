@@ -49,7 +49,7 @@ PHP_METHOD(RdKafka, __construct);
 extern zend_module_entry rdkafka_module_entry;
 #define phpext_rdkafka_ptr &rdkafka_module_entry
 
-#define PHP_RDKAFKA_VERSION "3.0.6-dev"
+#define PHP_RDKAFKA_VERSION "4.0.3"
 
 extern zend_object_handlers kafka_default_object_handlers;
 extern zend_class_entry * ce_kafka_exception;
@@ -67,12 +67,3 @@ extern zend_class_entry * ce_kafka_exception;
 #endif
 
 #endif	/* PHP_RDKAFKA_H */
-
-/*
- * Local variables:
- * tab-width: 4
- * c-basic-offset: 4
- * End:
- * vim600: noet sw=4 ts=4 fdm=marker
- * vim<600: noet sw=4 ts=4
- */

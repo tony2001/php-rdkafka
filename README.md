@@ -2,13 +2,14 @@
 
 [![Join the chat at https://gitter.im/arnaud-lb/php-rdkafka](https://badges.gitter.im/arnaud-lb/php-rdkafka.svg)](https://gitter.im/arnaud-lb/php-rdkafka?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
 
-![Supported Kafka versions: 0.8, 0.9, 0.10](https://img.shields.io/badge/kafka-0.8%2C%200.9%2C%200.10-blue.svg) ![Supported PHP versions: 5.3 .. 7.x](https://img.shields.io/badge/php-5.3,%207.x-blue.svg) [![Build Status](https://travis-ci.org/arnaud-lb/php-rdkafka.svg)](https://travis-ci.org/arnaud-lb/php-rdkafka)
+[![Supported librdkafka versions: >= 0.11](https://img.shields.io/badge/librdkafka-%3E%3D%200.11-blue.svg)](https://github.com/edenhill/librdkafka/releases) [![Supported Kafka versions: >= 0.8](https://img.shields.io/badge/kafka-%3E%3D%200.8-blue.svg)](https://github.com/edenhill/librdkafka/wiki/Broker-version-compatibility) ![Supported PHP versions: 5.6 .. 7.x](https://img.shields.io/badge/php-5.6%20..%207.x-blue.svg) [![Build Status](https://travis-ci.org/arnaud-lb/php-rdkafka.svg)](https://travis-ci.org/arnaud-lb/php-rdkafka)
 
-PHP-rdkafka is a thin [librdkafka](https://github.com/edenhill/librdkafka) binding providing a working PHP 5 / PHP 7 [Kafka](https://kafka.apache.org/) 0.8 / 0.9 / 0.10 client.
+PHP-rdkafka is a thin [librdkafka](https://github.com/edenhill/librdkafka) binding providing a working PHP 5 / PHP 7 [Kafka](https://kafka.apache.org/) client.
 
 It supports the high level and low level *consumers*, *producer*, and *metadata* APIs.
 
-The API ressembles as much as possible to librdkafka's, and is fully documented [here](https://arnaud-lb.github.io/php-rdkafka/phpdoc/book.rdkafka.html).
+The API ressembles as much as possible to librdkafka's, and is fully documented [here](https://arnaud-lb.github.io/php-rdkafka/phpdoc/book.rdkafka.html).  
+The source of the documentation can be found [here](https://github.com/arnaud-lb/php-rdkafka-doc)
 
 ## Table of Contents
 
@@ -30,29 +31,34 @@ The API ressembles as much as possible to librdkafka's, and is fully documented 
 
 ## Installation
 
-https://arnaud-lb.github.io/php-rdkafka/phpdoc/rdkafka.setup.html
+https://arnaud-lb.github.io/php-rdkafka-doc/phpdoc/rdkafka.setup.html
 
 ## Examples
 
-https://arnaud-lb.github.io/php-rdkafka/phpdoc/rdkafka.examples.html
+https://arnaud-lb.github.io/php-rdkafka-doc/phpdoc/rdkafka.examples.html
 
 ## Usage
 
+Configuration parameters used below can found in [Librdkafka Configuration reference](https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md)
+
 ### Producing
 
+#### Creating a producer
 For producing, we first need to create a producer, and to add brokers (Kafka
 servers) to it:
 
 ``` php
 <?php
-
-$rk = new RdKafka\Producer();
-$rk->setLogLevel(LOG_DEBUG);
-$rk->addBrokers("10.0.0.1,10.0.0.2");
+$conf = new RdKafka\Conf();
+$conf->set('log_level', (string) LOG_DEBUG);
+$conf->set('debug', 'all');
+$rk = new RdKafka\Producer($conf);
+$rk->addBrokers("10.0.0.1:9092,10.0.0.2:9092");
 ```
 
+#### Producing messages
+:warning: Make sure that your producer follows proper shutdown (see below) to not lose messages.  
 Next, we create a topic instance from the producer:
-
 ``` php
 <?php
 
@@ -61,23 +67,41 @@ $topic = $rk->newTopic("test");
 
 From there, we can produce as much messages as we want, using the produce
 method:
-
 ``` php
 <?php
 
 $topic->produce(RD_KAFKA_PARTITION_UA, 0, "Message payload");
 ```
-
 The first argument is the partition. RD_KAFKA_PARTITION_UA stands for
-*unassigned*, and lets librdkafka choose the partition.
-
-The second argument are message flags and should always be 0, currently.
-
+*unassigned*, and lets librdkafka choose the partition.  
+The second argument are message flags and should be either 0  
+or `RD_KAFKA_MSG_F_BLOCK` to block produce on full queue.
 The message payload can be anything.
+
+#### Proper shutdown
+
+This should be done prior to destroying a producer instance  
+to make sure all queued and in-flight produce requests are completed  
+before terminating. Use a reasonable value for `$timeout_ms`.  
+:warning: Not calling flush can lead to message loss!
+
+```php
+$rk->flush($timeout_ms);
+```
+
+In case you don't care about sending messages that haven't been sent yet,
+you can use `purge()` before calling `flush()`:
+
+```php
+// Forget messages that are not fully sent yet
+$rk->purge(RD_KAFKA_PURGE_F_QUEUE);
+
+$rk->flush($timeout_ms);
+```
 
 ### High-level consuming
 
-The RdKafka\KafkaConsumer class supports automatic partition assignment/revocation. See the example [here](https://arnaud-lb.github.io/php-rdkafka/phpdoc/rdkafka.examples.html#example-1).
+The RdKafka\KafkaConsumer class supports automatic partition assignment/revocation. See the example [here](https://arnaud-lb.github.io/php-rdkafka-doc/phpdoc/rdkafka.examples.html#example-1).
 
 ### Low-level consuming
 
@@ -86,9 +110,10 @@ servers) to it:
 
 ``` php
 <?php
-
-$rk = new RdKafka\Consumer();
-$rk->setLogLevel(LOG_DEBUG);
+$conf = new Conf();
+$conf->set('log_level', LOG_LEVEL);
+$conf->set('debug', 'all');
+$rk = new RdKafka\Consumer($conf);
 $rk->addBrokers("10.0.0.1,10.0.0.2");
 ```
 
@@ -115,7 +140,10 @@ while (true) {
     // The first argument is the partition (again).
     // The second argument is the timeout.
     $msg = $topic->consume(0, 1000);
-    if ($msg->err) {
+    if (null === $msg || $msg->err === RD_KAFKA_RESP_ERR__PARTITION_EOF) {
+        // Constant check required by librdkafka 0.11.6. Newer librdkafka versions will return NULL instead.
+        continue;
+    } elseif ($msg->err) {
         echo $msg->errstr(), "\n";
         break;
     } else {
@@ -137,7 +165,7 @@ Creating the queue:
 $queue = $rk->newQueue();
 ```
 
-Adding topars to the queue:
+Adding topic partitions to the queue:
 
 ``` php
 <?php
@@ -158,7 +186,10 @@ Next, retrieve the consumed messages from the queue:
 while (true) {
     // The only argument is the timeout.
     $msg = $queue->consume(1000);
-    if ($msg->err) {
+    if (null === $msg || $msg->err === RD_KAFKA_RESP_ERR__PARTITION_EOF) {
+        // Constant check required by librdkafka 0.11.6. Newer librdkafka versions will return NULL instead.
+        continue;
+    } elseif ($msg->err) {
         echo $msg->errstr(), "\n";
         break;
     } else {
@@ -169,18 +200,29 @@ while (true) {
 
 ### Using stored offsets
 
-librdkafka can store offsets in a local file, or on the broker. The default is local file, and as soon as you start using ``RD_KAFKA_OFFSET_STORED`` as consuming offset, rdkafka starts to store the offset.
+#### Broker (default)
+librdkafka per default stores offsets on the broker.
 
-By default, the file is created in the current directory, with a name based on the topic and the partition. The directory can be changed by setting the ``offset.store.path`` [configuration property](https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md).
+#### File offsets (deprecated)
+If you're using local file for offset storage, then by default the file is created in the current directory, with a
+name based on the topic and the partition. The directory can be changed by setting the ``offset.store.path``
+[configuration property](https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md).
 
-Other interesting properties are: ``offset.store.sync.interval.ms``, ``offset.store.method``, ``auto.commit.interval.ms``, ``auto.commit.enable``, ``offset.store.method``, ``group.id``.
+#### Useful offset settings
+Other interesting properties are: ``auto.commit.interval.ms``, ``auto.commit.enable``, ``group.id``, ``max.poll.interval.ms``.
+
+`auto.commit.interval.ms` and `auto.commit.enable` work in tandem: unless you specify otherwise, consumers **WILL**
+commit automatically in the background (at least high-level ones). If you need control and want to commit manually,
+then you want to set `auto.commit.enable` to `'false'`.
+
+`group.id` is responsible for setting your consumer group ID and it should be unique (and should
+not change). Kafka uses it to recognize applications and store offsets for them.
 
 ``` php
 <?php
 
 $topicConf = new RdKafka\TopicConf();
 $topicConf->set("auto.commit.interval.ms", 1e3);
-$topicConf->set("offset.store.sync.interval.ms", 60e3);
 
 $topic = $rk->newTopic("test", $topicConf);
 
@@ -188,6 +230,8 @@ $topic->consumeStart(0, RD_KAFKA_OFFSET_STORED);
 ```
 
 ### Interesting configuration parameters
+
+[Librdkafka Configuration reference](https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md)
 
 #### queued.max.messages.kbytes
 
@@ -215,7 +259,7 @@ pcntl_sigprocmask(SIG_BLOCK, array(SIGIO));
 $conf->set('internal.termination.signal', SIGIO);
 ```
 
-### socket.blocking.max.ms
+### socket.blocking.max.ms (librdkafka < 1.0.0)
 
 > Maximum time a broker socket operation may block. A lower value improves responsiveness at the expense of slightly higher CPU usage.
 
@@ -258,7 +302,8 @@ while ($producer->getOutQLen() > 0) {
 
 ## Documentation
 
-https://arnaud-lb.github.io/php-rdkafka/phpdoc/book.rdkafka.html
+https://arnaud-lb.github.io/php-rdkafka-doc/phpdoc/book.rdkafka.html  
+The source of the documentation can be found [here](https://github.com/arnaud-lb/php-rdkafka-doc)
 
 ## Asking for Help
 

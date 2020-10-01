@@ -90,7 +90,7 @@ ZEND_END_ARG_INFO()
 PHP_METHOD(RdKafka__Queue, consume)
 {
     kafka_queue_object *intern;
-    long timeout_ms;
+    zend_long timeout_ms;
     rd_kafka_message_t *message;
     rd_kafka_resp_err_t err;
 
@@ -106,7 +106,7 @@ PHP_METHOD(RdKafka__Queue, consume)
     message = rd_kafka_consume_queue(intern->rkqu, timeout_ms);
 
     if (!message) {
-        err = rd_kafka_errno2err(errno);
+        err = rd_kafka_last_error();
         if (err == RD_KAFKA_RESP_ERR__TIMED_OUT) {
             return;
         }

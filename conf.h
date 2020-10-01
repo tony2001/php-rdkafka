@@ -20,10 +20,11 @@
 #define KAFKA_CONF_H
 
 enum {
-        MSG_PARTITIONER_RANDOM = 2
-#ifdef HAVE_RD_KAFKA_MSG_PARTIIONER_CONSISTENT
-        , MSG_PARTITIONER_CONSISTENT = 3
-#endif
+        MSG_PARTITIONER_RANDOM = 2,
+        MSG_PARTITIONER_CONSISTENT = 3,
+        MSG_PARTITIONER_CONSISTENT_RANDOM = 4,
+        MSG_PARTITIONER_MURMUR2 = 5,
+        MSG_PARTITIONER_MURMUR2_RANDOM = 6
 };
 
 typedef enum {
@@ -37,13 +38,14 @@ typedef struct _kafka_conf_callback {
 } kafka_conf_callback;
 
 typedef struct _kafka_conf_callbacks {
-    zval rk;
+    zval zrk;
     kafka_conf_callback *error;
     kafka_conf_callback *rebalance;
     kafka_conf_callback *dr_msg;
     kafka_conf_callback *stats;
     kafka_conf_callback *consume;
     kafka_conf_callback *offset_commit;
+    kafka_conf_callback *log;
 } kafka_conf_callbacks;
 
 typedef struct _kafka_conf_object {
